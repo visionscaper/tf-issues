@@ -1,0 +1,3 @@
+tensorflow-gpu
+keras
+git+https://github.com/visionscaper/pybase.git

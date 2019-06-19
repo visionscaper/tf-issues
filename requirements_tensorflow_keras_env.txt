@@ -1,0 +1,2 @@
+tensorflow-gpu==1.14.1-dev20190614
+git+https://github.com/visionscaper/pybase.git
