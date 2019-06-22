@@ -1,11 +1,5 @@
 import tensorflow as tf
 
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Masking, Dense, Activation, Dropout
-from tensorflow.keras.layers import TimeDistributed
-
-from tensorflow.keras.layers import GRU
-
 from models.model_generator import ModelGenerator
 
 import basics.base_utils as _
@@ -27,10 +21,10 @@ _DISABLE_TRAINING_DEFAULTS = {
 class Seq2SeqWithSubmodels(ModelGenerator):
 
     def __init__(self,
+                 keras_classes,
                  max_seq_length,
                  num_symbols,
                  encoder_state_size=None,
-                 rnn_layer=None,
                  embedding_size=_DEFAULT_EMBEDDING_SIZE,
                  decoder_state_size=None,
                  decoder_output_mapping_size=None,
@@ -39,10 +33,40 @@ class Seq2SeqWithSubmodels(ModelGenerator):
                  drop_out=0.05,
                  use_masking=True,
                  dtype='float16',
-                 use_partially_known_dropout_noise_shape=False,
-                 **kwargs):
+                 use_partially_known_dropout_noise_shape=True):     # TODO : False results in error :
+                                                                    # "You must feed a value for placeholder tensor"
+
+        """
+
+        keras_classes injects the classes to use to build the model.
+        In this way we can reuse the same code to test Keras and tf.keras
+
+        keras_classes = {
+            "Model": <Model class>,
+
+            "Input": <Input class>,
+
+            "Masking": <Masking class>,
+            "Dense": <Dense class>,
+            "Activation": <Activation class>,
+            "TimeDistributed": <TimeDistributed class>,
+            "Dropout": <Dropout class>,
+
+            "RNN": <RNN class>
+        }
+
+        """
 
         super(Seq2SeqWithSubmodels, self).__init__()
+
+        self.Model = keras_classes["Model"]
+        self.Input = keras_classes["Input"]
+        self.Masking = keras_classes["Masking"]
+        self.Dense = keras_classes["Dense"]
+        self.Activation = keras_classes["Activation"]
+        self.TimeDistributed = keras_classes["TimeDistributed"]
+        self.Dropout = keras_classes["Dropout"]
+        self.RNN = keras_classes["RNN"]
 
         # For encoder input : Sequence + CHAT_END ==> seq. length + 1
         # For decoder feedback input : CHAT_START + Sequence + CHAT_END ==> seq. length + 2
@@ -52,8 +76,6 @@ class Seq2SeqWithSubmodels(ModelGenerator):
         self.max_seq_length = max_seq_length + 2
 
         self.num_symbols = num_symbols
-
-        self.rnn_layer = rnn_layer or GRU
 
         self.drop_out = drop_out
         self.use_masking = use_masking
@@ -83,7 +105,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
         for_inference = False
 
         if not disable_training:
-            disable_training = _DISABLE_TRAINING_DEFAULTS
+            disable_training = _DISABLE_TRAINING_DEFAULTS.copy()
 
         input_batch_shape = (batch_size, self.max_seq_length, self.num_symbols)
 
@@ -91,12 +113,12 @@ class Seq2SeqWithSubmodels(ModelGenerator):
                                        self.max_seq_length if not for_inference else 1,
                                        self.num_symbols)
 
-        chat_input = tf.keras.Input(
-            name="chat_input",
+        chat_input = self.Input(
+            name="chat-input",
             batch_shape=input_batch_shape,
             dtype=self.dtype)
 
-        teacher_forcing_input = tf.keras.Input(
+        teacher_forcing_input = self.Input(
             name="teacher-forcing-input",
             batch_shape=teacher_forcing_batch_shape,
             dtype=self.dtype)
@@ -105,11 +127,10 @@ class Seq2SeqWithSubmodels(ModelGenerator):
         encoder_model = self._create_encoder_model(embedding_model, batch_size)
         decoder_model = self._create_decoder_model(embedding_model, batch_size, for_inference)
 
-        thought = encoder_model(chat_input)
-        output = decoder_model([thought, teacher_forcing_input])
+        thought = encoder_model([chat_input])
+        output = decoder_model([teacher_forcing_input, thought])
 
-        train_model = Model(inputs=[input, teacher_forcing_input],
-                            outputs=output)
+        train_model = self.Model(inputs=[chat_input, teacher_forcing_input], outputs=[output])
 
         if checkpoint is not None:
             try:
@@ -145,7 +166,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
 
     def _create_embedding_layer(self):
         # Use simple Dense layer for character level embedding
-        return TimeDistributed(Dense(self.embedding_size), name="embedding-layer")
+        return self.TimeDistributed(self.Dense(self.embedding_size), name="embedding-layer")
 
     def _create_encoder_layers(self):
         num_encoder_layers = len(self.encoder_state_size)
@@ -155,7 +176,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
         for layer_idx in range(num_encoder_layers):
             is_last = layer_idx == (num_encoder_layers - 1)
 
-            layer = self.rnn_layer(
+            layer = self.RNN(
                 self.encoder_state_size[layer_idx],
                 name="encoder-layer-%d" % layer_idx,
                 stateful=False,
@@ -171,7 +192,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
 
         layers = []
         for layer_idx in range(num_decoder_layers):
-            layers.append(self.rnn_layer(
+            layers.append(self.RNN(
                 self.decoder_state_size[layer_idx],
                 name="decoder-layer-%d" % layer_idx,
                 stateful=for_inference,
@@ -180,18 +201,25 @@ class Seq2SeqWithSubmodels(ModelGenerator):
 
         return layers
 
-    def _create_dense_output(self, input, layers):
-        output = input
-        for layer in layers:
-            output = layer(output)
-            output = Activation(self.dense_output_activation)(output)
+    def _add_dropout(self, output):
 
+        noise_shape = None
+        output_shape = output.shape
+        if len(output_shape) == 3:
             noise_shape = (None, 1, None)
             if not self.use_partially_known_dropout_noise_shape:
                 shape = tf.shape(output)
                 noise_shape = (shape[0], 1, shape[2])
 
-            output = Dropout(self.drop_out, noise_shape=noise_shape)(output)
+        return self.Dropout(self.drop_out, noise_shape=noise_shape)(output)
+
+    def _create_dense_output(self, input, layers):
+        output = input
+        for layer in layers:
+            output = layer(output)
+            output = self.Activation(self.dense_output_activation)(output)
+
+            output = self._add_dropout(output)
 
         return output
 
@@ -212,12 +240,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
 
             output = layer(output, initial_state=init_state)
 
-            noise_shape = (None, 1, None)
-            if not self.use_partially_known_dropout_noise_shape:
-                shape = tf.shape(output)
-                noise_shape = (shape[0], 1, shape[2])
-
-            output = Dropout(self.drop_out, noise_shape=noise_shape)(output)
+            output = self._add_dropout(output)
 
         return output
 
@@ -230,16 +253,16 @@ class Seq2SeqWithSubmodels(ModelGenerator):
                                                  decoder_layers,
                                                  initial_state=initial_state)
 
-        if not (self.decoder_output_mapping_size is None):
+        if  self.decoder_output_mapping_size is not None:
             self._log.info(f'Using decoder output mapping layer with size : {self.decoder_output_mapping_size}')
 
-            output_mapping_layer = TimeDistributed(Dense(self.decoder_output_mapping_size),
-                                                   name="decoder-output-mapping-layer")
+            output_mapping_layer = self.TimeDistributed(self.Dense(self.decoder_output_mapping_size),
+                                                        name="decoder-output-mapping-layer")
             decoder_output = self._create_dense_output(decoder_output,
                                                        [output_mapping_layer])
 
-        decoder_output = TimeDistributed(
-            Dense(
+        decoder_output = self.TimeDistributed(
+            self.Dense(
                 self.num_symbols,
                 activation=self.output_activation
             ),
@@ -251,21 +274,21 @@ class Seq2SeqWithSubmodels(ModelGenerator):
         self._log.debug('Creating embedding model ...')
         embedding_layer = self._create_embedding_layer()
 
-        embedding_input = tf.keras.Input(
-            name="encoder-input",
+        embedding_input = self.Input(
+            name="embedding-input",
             batch_shape=(batch_size, self.max_seq_length, self.num_symbols),
             dtype=self.dtype)
 
         masked_input = embedding_input
         if self.use_masking:
             self._log.debug('Adding masking layer ...')
-            masked_input = Masking()(embedding_input)
+            masked_input = self.Masking()(embedding_input)
 
         embedding_output = embedding_layer(masked_input)
 
-        return Model(inputs=[embedding_input],
-                     outputs=[embedding_output],
-                     name='embedding-model')
+        return self.Model(inputs=[embedding_input],
+                          outputs=[embedding_output],
+                          name='embedding-model')
 
     def _create_encoder_model(self, embedding_model, batch_size=1):
         self._log.debug('Creating encoder model ...')
@@ -273,7 +296,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
 
         input_batch_shape = (batch_size, self.max_seq_length, self.num_symbols)
 
-        encoder_input = tf.keras.Input(
+        encoder_input = self.Input(
             name="chat-encoder-input",
             batch_shape=input_batch_shape,
             dtype=self.dtype)
@@ -282,12 +305,12 @@ class Seq2SeqWithSubmodels(ModelGenerator):
 
         output = self._create_encoder_output(embedded_input, encoder_layers)
 
-        return Model(inputs=[encoder_input],
-                     outputs=[output],
-                     name='chat-encoder-model')
+        return self.Model(inputs=[encoder_input],
+                          outputs=[output],
+                          name='chat-encoder-model')
 
     def _create_decoder_model(self, embedding_model, batch_size=1, for_inference=False):
-        self._log.debug('Creating decoder model with agent names...')
+        self._log.debug('Creating decoder model ...')
 
         decoder_layers = self._create_decoder_layers(for_inference)
 
@@ -295,7 +318,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
                                        self.max_seq_length if not for_inference else 1,
                                        self.num_symbols)
 
-        teacher_forcing_decoder_input = tf.keras.Input(
+        teacher_forcing_decoder_input = self.Input(
             name="teacher-forcing-decoder-input",
             batch_shape=teacher_forcing_batch_shape,
             dtype=self.dtype)
@@ -305,8 +328,9 @@ class Seq2SeqWithSubmodels(ModelGenerator):
         # In inference mode, the state is not a model input but set as state directly on the first layer of the
         # decoder model
         if not for_inference:
+            self._log.debug('Decoder model is for training purposes ...')
 
-            thought_decoder_input = tf.keras.Input(
+            thought_decoder_input = self.Input(
                 name="thought-decoder-input",
                 batch_shape=(batch_size, self.encoder_state_size[-1]),
                 dtype=self.dtype)
@@ -315,19 +339,20 @@ class Seq2SeqWithSubmodels(ModelGenerator):
                                                          initial_state=thought_decoder_input,
                                                          decoder_layers=decoder_layers)
 
-            return Model(inputs=[thought_decoder_input,
-                                 teacher_forcing_decoder_input],
-                         outputs=decoder_output,
-                         name='decoder-model')
+            return self.Model(inputs=[teacher_forcing_decoder_input, thought_decoder_input],
+                              outputs=[decoder_output],
+                              name='decoder-model')
         else:
+            self._log.debug('Decoder model is for inference ...')
+
             # Initial state set during inference
             decoder_output = self._create_decoder_output(embedded_teacher_forcing_input,
                                                          initial_state=None,
                                                          decoder_layers=decoder_layers)
 
-            return Model(inputs=[teacher_forcing_decoder_input],
-                         outputs=decoder_output,
-                         name='decoder-model')
+            return self.Model(inputs=[teacher_forcing_decoder_input],
+                              outputs=decoder_output,
+                              name='decoder-model')
 
     def _set_model_trainability(self, models, disable_training):
         if type(disable_training) != dict:
