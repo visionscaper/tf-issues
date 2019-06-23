@@ -33,6 +33,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
                  drop_out=0.05,
                  use_masking=True,
                  dtype='float16',
+                 disable_dropout_noise_shape=False,
                  use_partially_known_dropout_noise_shape=True):     # TODO : False results in error :
                                                                     # "You must feed a value for placeholder tensor"
 
@@ -95,6 +96,8 @@ class Seq2SeqWithSubmodels(ModelGenerator):
         self.decoder_state_size = select_value(decoder_state_size, _DEFAULT_DECODER_STATE_SIZE)
         self.decoder_output_mapping_size = select_value(decoder_output_mapping_size,
                                                         _DEFAULT_DECODER_OUTPUT_MAPPING_SIZE)
+
+        self.disable_dropout_noise_shape = disable_dropout_noise_shape
 
         self.use_partially_known_dropout_noise_shape = use_partially_known_dropout_noise_shape
         self._log.info('Using partially unknown dropout noise shape : %s' % self.use_partially_known_dropout_noise_shape)
@@ -205,7 +208,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
 
         noise_shape = None
         output_shape = output.shape
-        if len(output_shape) == 3:
+        if len(output_shape) == 3 and not self.disable_dropout_noise_shape:
             noise_shape = (None, 1, None)
             if not self.use_partially_known_dropout_noise_shape:
                 shape = tf.shape(output)

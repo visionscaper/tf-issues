@@ -4,7 +4,7 @@ from threading import Lock
 
 import numpy as np
 
-from keras.utils import np_utils
+from utils import to_categorical
 
 from basics.base import Base
 
@@ -124,4 +124,4 @@ class FakeChatGenerator(Base):
     def _encode_chat(self, chat):
         # Unknown symbols are at index 1
         chat = np.array(chat) - 1
-        return np_utils.to_categorical(chat, self.num_unique_symbols)
+        return to_categorical(chat, self.num_unique_symbols, dtype=self.dtype)
