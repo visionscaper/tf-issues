@@ -20,7 +20,7 @@ from models.seq2seq_with_submodels import Seq2SeqWithSubmodels
 # pydevd_pycharm.settrace('192.168.178.8', port=57491, stdoutToServer=True, stderrToServer=True)
 
 
-class TestIssuesKeras(unittest.TestCase):
+class TestIssuesTFKeras(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -53,56 +53,8 @@ class TestIssuesKeras(unittest.TestCase):
 
         K.clear_session()
 
-        sess = tf.Session(config=TestIssuesKeras.TF_CONFIG)
+        sess = tf.Session(config=TestIssuesTFKeras.TF_CONFIG)
         K.set_session(sess)
-
-    def test_single_gpu_float32_no_masking_calculate_dropout_noise_shape(self):
-        dtype = self._enable_float32()
-
-        batch_generator = FakeChatGenerator(
-            num_unique_symbols=self.num_unique_symbols,
-            max_seq_length=self.max_seq_length,
-            batch_size=self.batch_size,
-            return_sample_weights=True,
-            dtype=dtype)
-
-        model_generator = Seq2SeqWithSubmodels(TestIssuesKeras.KERAS_CLASSES,
-                                               self.max_seq_length,
-                                               self.num_unique_symbols,
-                                               use_masking=False,
-                                               use_partially_known_dropout_noise_shape=False,
-                                               dtype=dtype)
-
-        with tf.device('/gpu:0'):
-            models = model_generator.stamp_train_model()
-
-            model = models["train_model"]
-
-        self._compile_model(model, lambda: Adam(lr=1e-4))
-
-        # TODO : shapes are only correct when using one-hot encoding
-        dataset = tf.data.Dataset.from_generator(
-            batch_generator,
-            ({
-                 'chat-input': dtype,
-                 'teacher-forcing-input': dtype
-             },
-
-             dtype,  # outputs
-             dtype),  # sample weights
-            ({
-                 'chat-input': (None, None, None),
-                 'teacher-forcing-input': (None, None, None)
-             },
-             (None, None, None),
-             (None, None)))
-
-        model.fit(dataset,
-                  steps_per_epoch=len(batch_generator),
-                  epochs=5,
-                  verbose=1,
-                  max_queue_size=10,
-                  workers=3)
 
     def test_single_gpu_float32_no_masking_use_partially_known_dropout_noise_shape(self):
         dtype = self._enable_float32()
@@ -114,7 +66,7 @@ class TestIssuesKeras(unittest.TestCase):
             return_sample_weights=True,
             dtype=dtype)
 
-        model_generator = Seq2SeqWithSubmodels(TestIssuesKeras.KERAS_CLASSES,
+        model_generator = Seq2SeqWithSubmodels(TestIssuesTFKeras.KERAS_CLASSES,
                                                self.max_seq_length,
                                                self.num_unique_symbols,
                                                use_masking=False,
@@ -162,11 +114,59 @@ class TestIssuesKeras(unittest.TestCase):
             return_sample_weights=True,
             dtype=dtype)
 
-        model_generator = Seq2SeqWithSubmodels(TestIssuesKeras.KERAS_CLASSES,
+        model_generator = Seq2SeqWithSubmodels(TestIssuesTFKeras.KERAS_CLASSES,
                                                self.max_seq_length,
                                                self.num_unique_symbols,
                                                use_masking=False,
                                                disable_dropout_noise_shape=True,
+                                               dtype=dtype)
+
+        with tf.device('/gpu:0'):
+            models = model_generator.stamp_train_model()
+
+            model = models["train_model"]
+
+        self._compile_model(model, lambda: Adam(lr=1e-4))
+
+        # TODO : shapes are only correct when using one-hot encoding
+        dataset = tf.data.Dataset.from_generator(
+            batch_generator,
+            ({
+                 'chat-input': dtype,
+                 'teacher-forcing-input': dtype
+             },
+
+             dtype,  # outputs
+             dtype),  # sample weights
+            ({
+                 'chat-input': (None, None, None),
+                 'teacher-forcing-input': (None, None, None)
+             },
+             (None, None, None),
+             (None, None)))
+
+        model.fit(dataset,
+                  steps_per_epoch=len(batch_generator),
+                  epochs=5,
+                  verbose=1,
+                  max_queue_size=10,
+                  workers=3)
+
+    def test_single_gpu_float32_no_masking_calculate_dropout_noise_shape(self):
+        dtype = self._enable_float32()
+
+        batch_generator = FakeChatGenerator(
+            num_unique_symbols=self.num_unique_symbols,
+            max_seq_length=self.max_seq_length,
+            batch_size=self.batch_size,
+            return_sample_weights=True,
+            dtype=dtype)
+
+        model_generator = Seq2SeqWithSubmodels(TestIssuesTFKeras.KERAS_CLASSES,
+                                               self.max_seq_length,
+                                               self.num_unique_symbols,
+                                               use_masking=False,
+                                               use_partially_known_dropout_noise_shape=False,
                                                dtype=dtype)
 
         with tf.device('/gpu:0'):
