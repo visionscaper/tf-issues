@@ -2,6 +2,8 @@ import unittest
 
 import tensorflow as tf
 
+from tensorflow_core.python.training.experimental.loss_scale_optimizer import MixedPrecisionLossScaleOptimizer
+
 from tensorflow.keras import backend as K
 
 from tensorflow.keras.models import Model
@@ -50,6 +52,8 @@ class TestIssuesTFKeras(unittest.TestCase):
         self.embedding_size = 16
 
         self.loss_type = 'categorical_crossentropy'
+
+        self.loss_scale = 128
 
         K.clear_session()
 
@@ -200,14 +204,120 @@ class TestIssuesTFKeras(unittest.TestCase):
                   max_queue_size=10,
                   workers=3)
 
-    def _compile_model(self, model, create_optimizer):
+    def test_multi_gpu_float32_no_masking_no_dropout_noise_shape_no_sample_weight_mode(self):
+        dtype = self._enable_float32()
+
+        batch_generator = FakeChatGenerator(
+            num_unique_symbols=self.num_unique_symbols,
+            max_seq_length=self.max_seq_length,
+            batch_size=self.batch_size,
+            return_sample_weights=True,
+            dtype=dtype)
+
+        model_generator = Seq2SeqWithSubmodels(TestIssuesTFKeras.KERAS_CLASSES,
+                                               self.max_seq_length,
+                                               self.num_unique_symbols,
+                                               use_masking=False,
+                                               disable_dropout_noise_shape=True,
+                                               dtype=dtype)
+
+        mirrored_strategy = tf.distribute.MirroredStrategy()
+        with mirrored_strategy.scope():
+            models = model_generator.stamp_train_model()
+            model = models["train_model"]
+
+            self._compile_model(model, lambda: Adam(lr=1e-4), sample_weight_mode=False)
+
+        # TODO : shapes are only correct when using one-hot encoding
+        dataset = tf.data.Dataset.from_generator(
+            batch_generator,
+            ({
+                 'chat-input': dtype,
+                 'teacher-forcing-input': dtype
+             },
+
+             dtype,  # outputs
+             dtype),  # sample weights
+            ({
+                 'chat-input': (None, None, None),
+                 'teacher-forcing-input': (None, None, None)
+             },
+             (None, None, None),
+             (None, None)))
+
+        model.fit(dataset,
+                  steps_per_epoch=len(batch_generator),
+                  epochs=5,
+                  verbose=1,
+                  max_queue_size=10,
+                  workers=3)
+
+    def test_multi_gpu_float16_no_masking_no_dropout_noise_shape_no_sample_weight_mode(self):
+        dtype = self._enable_float16()
+
+        batch_generator = FakeChatGenerator(
+            num_unique_symbols=self.num_unique_symbols,
+            max_seq_length=self.max_seq_length,
+            batch_size=self.batch_size,
+            return_sample_weights=True,
+            dtype=dtype)
+
+        model_generator = Seq2SeqWithSubmodels(TestIssuesTFKeras.KERAS_CLASSES,
+                                               self.max_seq_length,
+                                               self.num_unique_symbols,
+                                               use_masking=False,
+                                               disable_dropout_noise_shape=True,
+                                               dtype=dtype)
+
+        def create_optimizer():
+            # NOTE : unable to use tf.Keras Adam instance
+            optimizer = tf.train.AdamOptimizer(learning_rate=1e-4)
+            return MixedPrecisionLossScaleOptimizer(optimizer, self.loss_scale)
+
+        mirrored_strategy = tf.distribute.MirroredStrategy()
+        with mirrored_strategy.scope():
+            models = model_generator.stamp_train_model()
+            model = models["train_model"]
+
+            self._compile_model(model, create_optimizer, sample_weight_mode=False)
+
+        # TODO : shapes are only correct when using one-hot encoding
+        dataset = tf.data.Dataset.from_generator(
+            batch_generator,
+            ({
+                 'chat-input': dtype,
+                 'teacher-forcing-input': dtype
+             },
+
+             dtype,  # outputs
+             dtype),  # sample weights
+            ({
+                 'chat-input': (None, None, None),
+                 'teacher-forcing-input': (None, None, None)
+             },
+             (None, None, None),
+             (None, None)))
+
+        model.fit(dataset,
+                  steps_per_epoch=len(batch_generator),
+                  epochs=5,
+                  verbose=1,
+                  max_queue_size=10,
+                  workers=3)
+
+    def _compile_model(self, model, create_optimizer, sample_weight_mode=True):
 
         optimizer = create_optimizer()
 
-        model.compile(loss=self.loss_type,
-                      sample_weight_mode="temporal",
-                      optimizer=optimizer,
-                      weighted_metrics=["accuracy"])
+        if sample_weight_mode:
+            model.compile(loss=self.loss_type,
+                          sample_weight_mode="temporal",
+                          optimizer=optimizer,
+                          weighted_metrics=["accuracy"])
+        else:
+            model.compile(loss=self.loss_type,
+                          optimizer=optimizer,
+                          metrics=["accuracy"])
 
     def _enable_float32(self):
         dtype = 'float32'
