@@ -11,6 +11,10 @@ _DEFAULT_ENCODER_STATE_SIZE = [1024, 1024, 1024]
 _DEFAULT_DECODER_STATE_SIZE = [1024, 1024, 1024]
 _DEFAULT_DECODER_OUTPUT_MAPPING_SIZE = 512
 
+# _DEFAULT_ENCODER_STATE_SIZE = [128, 128]
+# _DEFAULT_DECODER_STATE_SIZE = [128, 128]
+# _DEFAULT_DECODER_OUTPUT_MAPPING_SIZE = 128
+
 _DISABLE_TRAINING_DEFAULTS = {
     "embedding_model": False,
     "encoder_model": False,
@@ -169,7 +173,7 @@ class Seq2SeqWithSubmodels(ModelGenerator):
 
     def _create_embedding_layer(self):
         # Use simple Dense layer for character level embedding
-        return self.TimeDistributed(self.Dense(self.embedding_size), name="embedding-layer")
+        return self.TimeDistributed(self.Dense(self.embedding_size, name="embedding-dense"), name="embedding-layer")
 
     def _create_encoder_layers(self):
         num_encoder_layers = len(self.encoder_state_size)
@@ -259,7 +263,8 @@ class Seq2SeqWithSubmodels(ModelGenerator):
         if  self.decoder_output_mapping_size is not None:
             self._log.info(f'Using decoder output mapping layer with size : {self.decoder_output_mapping_size}')
 
-            output_mapping_layer = self.TimeDistributed(self.Dense(self.decoder_output_mapping_size),
+            output_mapping_layer = self.TimeDistributed(self.Dense(self.decoder_output_mapping_size,
+                                                                   name="decoder-output-mapping-dense"),
                                                         name="decoder-output-mapping-layer")
             decoder_output = self._create_dense_output(decoder_output,
                                                        [output_mapping_layer])
@@ -267,7 +272,8 @@ class Seq2SeqWithSubmodels(ModelGenerator):
         decoder_output = self.TimeDistributed(
             self.Dense(
                 self.num_symbols,
-                activation=self.output_activation
+                activation=self.output_activation,
+                name="decoder-output-dense"
             ),
             name="decoder-output-layer")(decoder_output)
 

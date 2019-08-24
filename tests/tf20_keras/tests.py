@@ -1,8 +1,8 @@
 import unittest
 
-import tensorflow as tf
+import logging
 
-from tensorflow.keras import backend as K
+import tensorflow as tf
 
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Masking, Dense, Activation, Dropout, TimeDistributed
@@ -35,11 +35,14 @@ class TestIssuesTFKeras(unittest.TestCase):
             "TimeDistributed": TimeDistributed,
             "Dropout": Dropout,
 
-            "RNN": CuDNNGRU
+            # Should now be transparent, GRU still gives poorer performance
+            "RNN": CuDNNGRU #GRU
         }
 
-        tf.logging.set_verbosity(tf.logging.INFO)
-        cls.TF_CONFIG = tf.ConfigProto(allow_soft_placement=True, gpu_options=tf.GPUOptions(allow_growth=True))
+        logging.getLogger("tensorflow").setLevel(logging.INFO)
+
+        cls.TF_CONFIG = tf.compat.v1.ConfigProto(allow_soft_placement=True,
+                                                 gpu_options=tf.compat.v1.GPUOptions(allow_growth=True))
 
     def setUp(self):
         # E.g. character symbols
@@ -53,10 +56,10 @@ class TestIssuesTFKeras(unittest.TestCase):
 
         self.loss_scale = 128
 
-        K.clear_session()
+        tf.compat.v1.keras.backend.clear_session()
 
-        sess = tf.Session(config=TestIssuesTFKeras.TF_CONFIG)
-        K.set_session(sess)
+        sess = tf.compat.v1.Session(config=TestIssuesTFKeras.TF_CONFIG)
+        tf.compat.v1.keras.backend.set_session(sess)
 
     def test_single_gpu_float32_no_masking_use_partially_known_dropout_noise_shape(self):
         dtype = self._enable_float32()
@@ -93,10 +96,10 @@ class TestIssuesTFKeras(unittest.TestCase):
              dtype,  # outputs
              dtype),  # sample weights
             ({
-                 'chat-input': (None, None, None),
-                 'teacher-forcing-input': (None, None, None)
+                 'chat-input': (None, None, self.num_unique_symbols),
+                 'teacher-forcing-input': (None, None, self.num_unique_symbols)
              },
-             (None, None, None),
+             (None, None, self.num_unique_symbols),
              (None, None)))
 
         model.fit(dataset,
@@ -141,10 +144,10 @@ class TestIssuesTFKeras(unittest.TestCase):
              dtype,  # outputs
              dtype),  # sample weights
             ({
-                 'chat-input': (None, None, None),
-                 'teacher-forcing-input': (None, None, None)
+                 'chat-input': (None, None, self.num_unique_symbols),
+                 'teacher-forcing-input': (None, None, self.num_unique_symbols)
              },
-             (None, None, None),
+             (None, None, self.num_unique_symbols),
              (None, None)))
 
         model.fit(dataset,
@@ -161,7 +164,7 @@ class TestIssuesTFKeras(unittest.TestCase):
             num_unique_symbols=self.num_unique_symbols,
             max_seq_length=self.max_seq_length,
             batch_size=self.batch_size,
-            return_sample_weights=True,
+            return_sample_weights=False,
             dtype=dtype)
 
         model_generator = Seq2SeqWithSubmodels(TestIssuesTFKeras.KERAS_CLASSES,
@@ -186,14 +189,12 @@ class TestIssuesTFKeras(unittest.TestCase):
                  'teacher-forcing-input': dtype
              },
 
-             dtype,  # outputs
-             dtype),  # sample weights
+             dtype),  # outputs
             ({
-                 'chat-input': (None, None, None),
-                 'teacher-forcing-input': (None, None, None)
+                 'chat-input': (None, None, self.num_unique_symbols),
+                 'teacher-forcing-input': (None, None, self.num_unique_symbols)
              },
-             (None, None, None),
-             (None, None)))
+             (None, None, self.num_unique_symbols)))
 
         model.fit(dataset,
                   steps_per_epoch=len(batch_generator),
@@ -233,15 +234,64 @@ class TestIssuesTFKeras(unittest.TestCase):
                  'chat-input': dtype,
                  'teacher-forcing-input': dtype
              },
-
              dtype,  # outputs
              dtype),  # sample weights
             ({
-                 'chat-input': (None, None, None),
-                 'teacher-forcing-input': (None, None, None)
+                 'chat-input': (None, None, self.num_unique_symbols),
+                 'teacher-forcing-input': (None, None, self.num_unique_symbols)
              },
-             (None, None, None),
+             (None, None, self.num_unique_symbols),
              (None, None)))
+
+        model.fit(dataset,
+                  steps_per_epoch=len(batch_generator),
+                  epochs=5,
+                  verbose=1,
+                  max_queue_size=10,
+                  workers=3)
+
+    def test_single_gpu_float16_no_masking_no_dropout_noise_shape_no_sample_weight_mode(self):
+        dtype = self._enable_float16()
+
+        batch_generator = FakeChatGenerator(
+            num_unique_symbols=self.num_unique_symbols,
+            max_seq_length=self.max_seq_length,
+            batch_size=self.batch_size,
+            return_sample_weights=False,
+            dtype=dtype)
+
+        model_generator = Seq2SeqWithSubmodels(TestIssuesTFKeras.KERAS_CLASSES,
+                                               self.max_seq_length,
+                                               self.num_unique_symbols,
+                                               use_masking=False,
+                                               disable_dropout_noise_shape=True,
+                                               dtype=dtype)
+
+        def create_optimizer():
+            # optimizer = tf.train.AdamOptimizer(learning_rate=1e-4)
+            optimizer = Adam(lr=1e-4)
+            return tf.train.experimental.enable_mixed_precision_graph_rewrite(optimizer)
+
+        with tf.device('/gpu:0'):
+            models = model_generator.stamp_train_model()
+            model = models["train_model"]
+
+        self._compile_model(model, create_optimizer, sample_weight_mode=False)
+
+        # TODO : shapes are only correct when using one-hot encoding
+        dataset = tf.data.Dataset.from_generator(
+            batch_generator,
+            ({
+                 'chat-input': dtype,
+                 'teacher-forcing-input': dtype
+             },
+
+             dtype),  # outputs
+            ({
+                 'chat-input': (None, None, self.num_unique_symbols),
+                 'teacher-forcing-input': (None, None, self.num_unique_symbols)
+             },
+             (None, None, self.num_unique_symbols)))
 
         model.fit(dataset,
                   steps_per_epoch=len(batch_generator),
@@ -257,7 +307,7 @@ class TestIssuesTFKeras(unittest.TestCase):
             num_unique_symbols=self.num_unique_symbols,
             max_seq_length=self.max_seq_length,
             batch_size=self.batch_size,
-            return_sample_weights=True,
+            return_sample_weights=False,
             dtype=dtype)
 
         model_generator = Seq2SeqWithSubmodels(TestIssuesTFKeras.KERAS_CLASSES,
@@ -287,14 +337,12 @@ class TestIssuesTFKeras(unittest.TestCase):
                  'teacher-forcing-input': dtype
              },
 
-             dtype,  # outputs
-             dtype),  # sample weights
+             dtype),  # outputs
             ({
-                 'chat-input': (None, None, None),
-                 'teacher-forcing-input': (None, None, None)
+                 'chat-input': (None, None, self.num_unique_symbols),
+                 'teacher-forcing-input': (None, None, self.num_unique_symbols)
              },
-             (None, None, None),
-             (None, None)))
+             (None, None, self.num_unique_symbols)))
 
         model.fit(dataset,
                   steps_per_epoch=len(batch_generator),
@@ -320,16 +368,16 @@ class TestIssuesTFKeras(unittest.TestCase):
     def _enable_float32(self):
         dtype = 'float32'
 
-        K.set_floatx(dtype)
-        K.set_epsilon(1e-7)
+        tf.compat.v1.keras.backend.set_floatx(dtype)
+        tf.compat.v1.keras.backend.set_epsilon(1e-7)
 
         return dtype
 
     def _enable_float16(self):
         dtype = 'float16'
 
-        K.set_floatx(dtype)
-        K.set_epsilon(1e-4)
+        tf.compat.v1.keras.backend.set_floatx(dtype)
+        tf.compat.v1.keras.backend.set_epsilon(1e-4)
 
         return dtype
 
