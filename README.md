@@ -40,6 +40,6 @@ The tests related to float16 (at least for `tf20.keras`) result in segmentation 
 
 Run a individual test as follows:
 
-```python
+```bash
 python3 tests/tf20_keras/tests.py TestIssuesTFKeras.test_multi_gpu_float32_no_masking_no_dropout_noise_shape_sample_weight_mode
 ```
